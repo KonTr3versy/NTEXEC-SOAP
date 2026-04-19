@@ -43,19 +43,8 @@ class ADWSAdapter(DirectoryAdapter):
         context = parse_enumeration_context(enum_result)
 
         while context and not is_end_of_sequence(enum_result):
-            enum_result = self._client.pull(context, page_size=req.page_size)
+            enum_result = self._client.pull(context)
             items.extend(enum_result.get("items", []))
             context = parse_enumeration_context(enum_result)
 
         return [normalize_adws_entry(entry) for entry in items]
-
-    def search_single_object(self, distinguished_name: str, attributes: Iterable[str] | None = None) -> dict[str, Any] | None:
-        req = DirectorySearchRequest(
-            base_dn=distinguished_name,
-            ldap_filter="(objectClass=*)",
-            attributes=attributes,
-            scope="base",
-            page_size=1,
-        )
-        results = self.search(req)
-        return results[0] if results else None
