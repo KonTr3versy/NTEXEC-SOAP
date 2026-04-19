@@ -8,7 +8,7 @@ Do NOT default to creating a brand-new top-level protocol.
 Your first design assumption should be that ADWS should become an alternate backend/transport under the existing LDAP protocol flow, unless the repository structure proves that is clearly impractical.
 
 Context:
-- Repository: NetExec
+- Repository: [NetExec](https://github.com/Pennyw0rth/NetExec)
 - Reference/oracle for feasibility and protocol ideas: SoaPy
 - ADWS is not just LDAP on another port.
 - For the first implementation, focus on read/query behavior only.
