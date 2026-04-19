@@ -1,138 +1,198 @@
-You are now implementing the approved design for adding ADWS-backed directory querying to NetExec.
+# Step2 Execution Plan (ADWS-backed directory querying for NetExec)
 
-Goal:
-Build a proof-of-concept branch that adds ADWS as an alternate backend/transport for the existing LDAP protocol flow.
+## 1) Plan (8–12 bullets)
 
-Important constraints:
-- Existing LDAP behavior must remain unchanged by default
-- ADWS mode must be opt-in
-- Keep changes localized
-- Do not overstate implementation completeness
-- Prioritize a believable, maintainable prototype over a sprawling partial implementation
+1. Add a small transport-neutral interface (`DirectorySearchRequest`, `DirectoryAdapter`) under LDAP so LDAP and ADWS can share one call shape without changing operator UX.
+2. Introduce `LDAPAdapter` as a wrapper around current LDAP behavior first, and verify default path is unchanged.
+3. Add `ADWSAdapter` scaffold with explicit staged TODOs for deep transport/auth pieces (don’t overclaim completeness).
+4. Add backend selection in LDAP protocol flow (`ldap` default, `adws` opt-in).
+5. Add CLI transport flag(s) (`--directory-transport ldap|adws` or `--adws`) plus optional ADWS tuning args.
+6. Implement ADWS client scaffolding (`adws_client.py`, `adws_nmf.py`, `adws_nns.py`) with clear boundaries and narrow public API.
+7. Add ADWS enumerate/pull search scaffolding and “single-object via base search” helper semantics.
+8. Add ADWS normalization layer to emit LDAP-like dictionaries keyed as expected by existing modules.
+9. Add focused tests for selection, CLI parsing, request object behavior, normalization, and unimplemented-path failures.
+10. Finalize with honest limitations + next steps, aligned to “POC, maintainable, localized” scope.
 
-Implementation scope for this pass:
-1. Refactor the LDAP protocol flow to support a backend/transport abstraction
-2. Add an ADWS backend skeleton and wire it into the LDAP flow
-3. Add CLI options for selecting ADWS
-4. Add ADWS query/result normalization scaffolding
-5. Add tests for backend selection, parser behavior, and CLI handling
-6. Add explicit TODOs where deep protocol work is not yet complete
+---
 
-Architecture target:
-Use a transport-neutral interface such as:
+## 2) File-by-file work plan
 
-@dataclass
-class DirectorySearchRequest:
-    base_dn: str
-    ldap_filter: str
-    attributes: list[str]
-    scope: str = "subtree"   # base | onelevel | subtree
-    page_size: int = 256
+### `nxc/protocols/ldap/directory_adapter.py` (new)
+**Purpose:** Shared contracts.
 
-class DirectoryAdapter(Protocol):
-    def connect(self) -> None: ...
-    def bind_ntlm(self, domain: str, username: str, password: str | None = None,
-                  nt_hash: str | None = None) -> None: ...
-    def bind_kerberos(self, domain: str, username: str, password: str | None = None,
-                      nt_hash: str | None = None, aes_key: str | None = None,
-                      kdc_host: str | None = None, use_cache: bool = False) -> None: ...
-    def rootdse(self, attrs: list[str]) -> dict[str, Any]: ...
-    def search(self, req: DirectorySearchRequest) -> Iterable[dict[str, Any]]: ...
+**Add:**
+- `DirectorySearchRequest` dataclass:
+  - `base_dn`, `ldap_filter`, `attributes`, `scope="subtree"`, `page_size=256`
+  - validate `scope in {"base","onelevel","subtree"}`
+- `DirectoryAdapter` protocol:
+  - `connect()`
+  - `bind_ntlm(...)`
+  - `bind_kerberos(...)`
+  - `rootdse(attrs)`
+  - `search(req)`
 
-Implement:
-- LDAPAdapter that wraps or reuses current LDAP behavior
-- ADWSAdapter that provides the new backend surface
+**Acceptance criteria:**
+- No protocol-specific code inside this file.
+- Unit test validates defaults + invalid scope behavior.
 
-Recommended files to create or modify:
-- nxc/protocols/ldap.py
-- nxc/protocols/ldap/proto_args.py
-- nxc/protocols/ldap/adws_client.py
-- nxc/protocols/ldap/adws_nmf.py
-- nxc/protocols/ldap/adws_nns.py
-- nxc/parsers/adws_results.py
-- tests/... relevant new or updated test files
+---
 
-CLI behavior:
-Support one of the following, based on existing NetExec style:
-- --adws
-or
-- --directory-transport ldap|adws
+### `nxc/protocols/ldap/ldap_adapter.py` (new)
+**Purpose:** Preserve existing LDAP behavior via adapter.
 
-Optional supportive args:
-- --adws-page-size
-- --adws-scope
-- --adws-endpoint
+**Add:**
+- `class LDAPAdapter(DirectoryAdapter)` accepting existing ldap protocol state/dependencies.
+- Methods delegate to existing LDAP implementation internals (or thin wrappers).
 
-ADWS behavior expectations for this pass:
-- Search path should be designed around enumerate/pull semantics
-- “Get one object” should reuse search with:
-  - base_dn = DN or GUID
-  - ldap_filter = (objectClass=*)
-  - scope = base
-  - page_size = 1
-- RootDSE/naming-context discovery should have a dedicated helper or scaffold
-- Normalize returned objects into LDAP-like dictionaries with keys such as:
-  - distinguishedName
-  - sAMAccountName
-  - objectSid
-  - objectGUID
-  - defaultNamingContext
-  - schemaNamingContext
-  - configurationNamingContext
+**Acceptance criteria:**
+- No behavior drift for default LDAP path.
+- Existing LDAP actions work unchanged when transport is `ldap`.
 
-Implementation strategy:
-Phase 1 for this coding pass should be:
-- introduce the abstraction
-- preserve current LDAP backend behavior
-- add ADWS backend scaffold
-- add parser/normalization layer
-- add CLI selection
-- add tests
-- add explicit TODOs for live NTLM/Kerberos transport completion if not fully implemented
+---
 
-Code quality requirements:
-- Keep classes small and cohesive
-- Add docstrings where behavior is non-obvious
-- Do not add dead code just to look complete
-- Use explicit NotImplementedError or custom errors where functionality is intentionally deferred
-- Make failure modes clear and structured
-- Keep comments honest and technically precise
+### `nxc/protocols/ldap/adws_adapter.py` (new)
+**Purpose:** ADWS backend skeleton (read/query first milestone).
 
-Testing requirements:
-Add tests for:
-- backend selection
-- backward compatibility of default LDAP path
-- CLI parsing of ADWS flags
-- DirectorySearchRequest behavior
-- ADWS result normalization
-- enumeration context / end-of-sequence parsing helpers
-- graceful handling of unimplemented deep transport pieces
+**Add:**
+- `class ADWSAdapter(DirectoryAdapter)`
+- `connect()` scaffolding to ADWS client session
+- `bind_ntlm(...)` as first planned path (can be scaffold + structured TODO)
+- `bind_kerberos(...)` explicit `NotImplementedError` or staged TODO if not ready
+- `rootdse(attrs)` helper/scaffold for naming contexts
+- `search(req)` using enumerate/pull structure (scaffold acceptable if explicit)
 
-Expected deliverables:
-1. A concise implementation summary
-2. The file-by-file change list
-3. The code changes
-4. Tests
-5. Known limitations / next steps
-6. Example CLI usage
+**Acceptance criteria:**
+- Clear failure modes (`NotImplementedError`/custom errors) for deferred depth.
+- No “pretend complete” behavior.
 
-Output instructions:
-- First, restate the implementation plan in 8–12 bullets max
-- Then make the code changes
-- Then show the patch or file diffs
-- Then explain key design decisions
-- Then list known gaps honestly
+---
 
-Important:
-I would rather receive:
-- a correct backend abstraction
-- preserved LDAP compatibility
-- a clean ADWS scaffold
-- believable parser/normalization logic
-- good tests
-- explicit TODOs
+### `nxc/protocols/ldap/adws_client.py` (new)
+**Purpose:** Orchestration boundary over ADWS wire details.
 
-than:
-- a messy, overstated, half-working “full ADWS implementation.”
+**Add:**
+- Session init + endpoint parsing
+- High-level methods:
+  - `enumerate_search(...)`
+  - `pull(...)`
+  - `query_rootdse(...)`
+- Returns raw structured payloads (normalization happens elsewhere)
 
-Bias toward code that fits NetExec’s existing style and is realistic for offensive-security tooling maintenance.
+**Acceptance criteria:**
+- Small cohesive class; no LDAP business logic mixed in.
+
+---
+
+### `nxc/protocols/ldap/adws_nmf.py` and `nxc/protocols/ldap/adws_nns.py` (new)
+**Purpose:** Transport framing scaffolding.
+
+**Add:**
+- Minimal message/frame helpers needed for POC
+- Context/end-of-sequence parse helper hooks
+- Explicit TODO markers for incomplete protocol depth
+
+**Acceptance criteria:**
+- Helpers are composable and testable in isolation.
+- Unimplemented areas fail explicitly.
+
+---
+
+### `nxc/parsers/adws_results.py` (new)
+**Purpose:** Normalize ADWS results into LDAP-like dictionaries.
+
+**Add:**
+- `normalize_adws_entry(raw) -> dict`
+- `normalize_adws_rootdse(raw) -> dict`
+- Attribute mapping:
+  - `distinguishedName`, `sAMAccountName`, `objectSid`, `objectGUID`,
+    `defaultNamingContext`, `schemaNamingContext`, `configurationNamingContext`
+
+**Acceptance criteria:**
+- Output shape matches existing LDAP consumer expectations.
+- Handles single vs multi-valued attributes consistently.
+
+---
+
+### `nxc/protocols/ldap/proto_args.py` (modify)
+**Purpose:** Opt-in ADWS flag plumbing.
+
+**Add one style (recommended):**
+- `--directory-transport` with choices `ldap|adws` default `ldap`
+- Optional:
+  - `--adws-endpoint`
+  - `--adws-page-size`
+  - `--adws-scope`
+
+**Alternative:** support `--adws` as alias for `--directory-transport adws`.
+
+**Acceptance criteria:**
+- Existing invocations untouched.
+- ADWS args ignored/validated appropriately unless ADWS selected.
+
+---
+
+### `nxc/protocols/ldap.py` (modify, localized)
+**Purpose:** Backend selection + adapter-based flow.
+
+**Refactor minimally:**
+- Add backend factory:
+  - if `args.directory_transport == "adws"` -> `ADWSAdapter`
+  - else -> `LDAPAdapter`
+- Replace direct transport calls in shared query/auth entry points with adapter calls.
+- Keep existing command handlers and output UX intact.
+
+**Acceptance criteria:**
+- Default behavior equivalent to current LDAP path.
+- ADWS path is clearly opt-in.
+
+---
+
+### Tests (`tests/...` new/updated)
+**Must cover:**
+- Backend selection
+- Default LDAP compatibility
+- CLI parsing
+- `DirectorySearchRequest` behavior
+- ADWS normalization
+- Enumeration context/end-of-sequence helper behavior
+- Graceful unimplemented transport handling
+
+**Suggested test files:**
+- `tests/protocols/test_ldap_transport_selection.py`
+- `tests/protocols/test_ldap_proto_args_adws.py`
+- `tests/protocols/test_directory_search_request.py`
+- `tests/parsers/test_adws_results.py`
+- `tests/protocols/test_adws_transport_scaffold.py`
+
+---
+
+## 3) Suggested sequencing
+
+1. Contracts (`directory_adapter.py`)
+2. `LDAPAdapter` wrapper
+3. Backend selection in `ldap.py` (still LDAP only)
+4. CLI flags
+5. `ADWSAdapter` scaffold
+6. ADWS client + nmf/nns helpers
+7. ADWS normalization parser
+8. Tests + explicit known gaps section
+
+---
+
+## 4) Risk controls / guardrails
+
+- Keep all ADWS code paths behind opt-in flags.
+- Avoid broad reorganization of existing LDAP handlers.
+- Use explicit TODO/NotImplemented for deep unbuilt pieces.
+- Add regression test that default LDAP transport behavior is unchanged.
+
+---
+
+## 5) Definition of Done (Step2 POC)
+
+- Transport abstraction introduced and used.
+- Default LDAP behavior unchanged.
+- ADWS backend selectable via CLI.
+- ADWS query/result scaffolding present with normalization.
+- Tests added for selection/parsing/normalization/failure-paths.
+- Limitations documented honestly (not overstated).
